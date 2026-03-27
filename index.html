@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spring Break Bingo 🔥</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;600;800&display=swap" rel="stylesheet">
+
+<!-- Firebase -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyCs8yV9yn271k4MvQwxdVHlveW3xXTwntE",
+    authDomain: "binguito-1edac.firebaseapp.com",
+    projectId: "binguito-1edac",
+    storageBucket: "binguito-1edac.firebasestorage.app",
+    messagingSenderId: "1000338359137",
+    appId: "1:1000338359137:web:b19a262c51792c4623fb20"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  // ─── CONFIG ───────────────────────────────────────────
+  const PLAYERS = [
+    { name: "Yavar",  email: "tomas.yavar1998@gmail.com" },
+    { name: "Pelao",  email: "janc1998@gmail.com" },
+    { name: "Juanca", email: "Juancarlosolivares.1998@gmail.com" },
+    { name: "Guatón", email: "agu.quiroz@gmail.com" },
+  ];
+
+  const EMAILJS_SERVICE  = "service_42d5ibm";
+  const EMAILJS_TEMPLATE = "template_a6sel4m";
+  const EMAILJS_PUBKEY   = "wf-i7jYdqPdrk7oYC";
+
+  const TRIO_INDEX = 12;
+
+  const CELLS = [
+  { emoji: "💋", text: "Comerse a una mina en la barra", pts: 1},
+  { emoji: "🌊", text: "Tirar en la piscina/playa", pts: 5 },
+  { emoji: "🩴", text: "Convencer a una mina de bañarse en pelota", pts: 4 },
+  { emoji: "🛏️", text: "Llevar a una mina a la pieza en la primera noche", pts: 3 },
+  { emoji: "🍹", text: "Hacer un body shot", pts: 1 },
+  { emoji: "🌅", text: "Amanecer con alguien que conociste esa misma noche", pts: 2 },
+  { emoji: "🕺", text: "Bailar con una MILF", pts: 1 },
+  { emoji: "🏳️‍⚧️", text: "Safar del traba/Tirarse un traba", pts: 5 },
+  { emoji: "👙", text: "Convencer a una mina de hacer topless", pts: 3 },
+  { emoji: "😈", text: "Agarrar con dos minas distintas en la misma noche", pts: 2 },
+  { emoji: "🇨🇳", text: "Agarrar con una asiatica", pts: 3 },
+  { emoji: "🍔", text: "Agarrar con una gorda", pts: 3 },
+  { emoji: "🏆", text: "TRÍO", center: true },
+  { emoji: "🇪🇹", text: "Agarrar con una negra", pts: 3 },
+  { emoji: "🇦🇷", text: "Agarrar con una argentina", pts: 3 },
+  { emoji: "🌶️", text: "Que una mina te haga un striptease privado", pts: 4 },
+  { emoji: "👵🏻", text: "Comerse a una +40", pts: 2 },
+  { emoji: "💦", text: "Tener sexo en la ducha con alguien del resort" , pts: 5},
+  { emoji: "📸", text: "Sacarse una foto post sexo", pts: 4 },
+  { emoji: "🌙", text: "Pasar tres noches seguidas con personas distintas", pts: 6 },
+  { emoji: "🇪🇺", text: "Agarrar con una europea", pts: 3 },
+  { emoji: "👀", text: "Agarra con la mina más rica (votación)", pts: 5 },
+  { emoji: "🔥", text: "Que una mina te presente a su amiga para agarrartela", pts: 2 },
+  { emoji: "🥂", text: "Compartir cama con dos minas a la vez (aunque sea a dormir)", pts: 4 },
+  { emoji: "💌", text: "Que una mina te deje su contacto sin que se lo pidas", pts: 1 },
+];
+
+  const TOTAL_PTS = CELLS.reduce((s, c, i) => i === TRIO_INDEX ? s : s + (c.pts || 0), 0);
+  function cellPts(i) { return i === TRIO_INDEX ? TOTAL_PTS : (CELLS[i].pts || 0); }
+
+  // ─── STATE ────────────────────────────────────────────
+  let currentPlayer = null;
+  let allScores = {};      // { playerName: { marked: {}, total: 0 } }
+  let unsubscribe = null;
+
+  // ─── EMAILJS ──────────────────────────────────────────
+  function loadEmailJS() {
+    return new Promise(resolve => {
+      if (window.emailjs) { resolve(); return; }
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js';
+      s.onload = () => { emailjs.init(EMAILJS_PUBKEY); resolve(); };
+      document.head.appendChild(s);
+    });
+  }
+
+  async function sendNotifications(playerName, cellIndex, newTotal) {
+    await loadEmailJS();
+    const cell = CELLS[cellIndex];
+    const others = PLAYERS.filter(p => p.name !== playerName);
+    for (const p of others) {
+      try {
+        await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+          to_email:        p.email,
+          player_name:     playerName,
+          challenge_text:  cell.text,
+          challenge_pts:   cellPts(cellIndex),
+          player_total:    newTotal,
+        });
+      } catch(e) { console.warn('Email error:', e); }
+    }
+  }
+
+  // ─── FIREBASE ─────────────────────────────────────────
+  async function saveToFirebase(playerName, marked) {
+    const total = Object.entries(marked)
+      .filter(([,v]) => v)
+      .reduce((s, [i]) => s + cellPts(Number(i)), 0);
+    await setDoc(doc(db, "bingo", playerName), { marked, total, updatedAt: Date.now() });
+    return total;
+  }
+
+  function listenAll() {
+    if (unsubscribe) unsubscribe();
+    // Listen to each player
+    PLAYERS.forEach(p => {
+      onSnapshot(doc(db, "bingo", p.name), snap => {
+        if (snap.exists()) {
+          allScores[p.name] = snap.data();
+        } else {
+          allScores[p.name] = { marked: {}, total: 0 };
+        }
+        renderScoreboard();
+      });
+    });
+  }
+
+  // ─── TOGGLE ───────────────────────────────────────────
+  async function toggle(i) {
+    if (!currentPlayer) return;
+    const data = allScores[currentPlayer.name] || { marked: {}, total: 0 };
+    const marked = { ...data.marked };
+    const wasMarked = !!marked[i];
+    marked[i] = !wasMarked;
+
+    // Optimistic UI
+    allScores[currentPlayer.name] = { marked, total: 0 };
+    renderGrid();
+
+    const newTotal = await saveToFirebase(currentPlayer.name, marked);
+
+    // Notify only when marking (not unmarking)
+    if (!wasMarked) {
+      sendNotifications(currentPlayer.name, i, newTotal);
+    }
+  }
+
+  // ─── RENDER ───────────────────────────────────────────
+  function renderGrid() {
+    const grid = document.getElementById('grid');
+    if (!grid || !currentPlayer) return;
+    const myData = allScores[currentPlayer.name] || { marked: {}, total: 0 };
+    const marked = myData.marked || {};
+
+    let totalPts = 0, completed = 0;
+    grid.innerHTML = '';
+
+    CELLS.forEach((c, i) => {
+      const isCenter = i === TRIO_INDEX;
+      const isMarked = !!marked[i];
+      const pts = cellPts(i);
+      if (isMarked) { totalPts += pts; completed++; }
+
+      const div = document.createElement('div');
+      div.className = 'cell' + (isCenter ? ' center' : '') + (isMarked ? ' marked' : '');
+      const ptsLabel = isCenter ? `${pts} pts (suma)` : `${pts} pt${pts !== 1 ? 's' : ''}`;
+      div.innerHTML = `<span class="emoji">${c.emoji}</span>${isCenter ? '<strong>' + c.text + '</strong>' : c.text}<span class="pts-badge">${ptsLabel}</span>`;
+      div.onclick = () => toggle(i);
+      grid.appendChild(div);
+    });
+
+    document.getElementById('myTotalPts').textContent = totalPts;
+    document.getElementById('myCount').textContent = completed;
+    document.getElementById('trioPts').textContent = TOTAL_PTS;
+  }
+
+  function renderScoreboard() {
+    const sb = document.getElementById('scoreboard');
+    if (!sb) return;
+    const sorted = [...PLAYERS].sort((a, b) => {
+      const ta = (allScores[a.name] || {}).total || 0;
+      const tb = (allScores[b.name] || {}).total || 0;
+      return tb - ta;
+    });
+
+    sb.innerHTML = sorted.map((p, rank) => {
+      const score = (allScores[p.name] || {}).total || 0;
+      const isMe = currentPlayer && p.name === currentPlayer.name;
+      const medals = ['🥇','🥈','🥉','4️⃣'];
+      return `
+        <div class="sb-row ${isMe ? 'sb-me' : ''}">
+          <span class="sb-rank">${medals[rank] || (rank+1)}</span>
+          <span class="sb-name">${p.name}${isMe ? ' (tú)' : ''}</span>
+          <span class="sb-pts">${score} <small>pts</small></span>
+        </div>`;
+    }).join('');
+
+    if (currentPlayer) renderGrid();
+  }
+
+  // ─── LOGIN ────────────────────────────────────────────
+  window.selectPlayer = function(name) {
+    currentPlayer = PLAYERS.find(p => p.name === name);
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('game-screen').style.display  = 'flex';
+    document.getElementById('greeting').textContent = `Jugando como: ${name}`;
+    listenAll();
+  };
+
+  window.goBack = function() {
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('game-screen').style.display  = 'none';
+    currentPlayer = null;
+  };
+
+  // init
+  window.addEventListener('DOMContentLoaded', () => {
+    // pre-load allScores
+    PLAYERS.forEach(p => { allScores[p.name] = { marked: {}, total: 0 }; });
+  });
+</script>
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --orange: #FF4D1C; --yellow: #FFD600; --pink: #FF2D78;
+    --dark: #0D0D0D; --card-bg: #1A1A1A; --cell-bg: #222;
+  }
+  body {
+    background: var(--dark);
+    min-height: 100vh;
+    font-family: 'DM Sans', sans-serif;
+    background-image: radial-gradient(circle at 20% 20%, #FF4D1C22 0%, transparent 50%),
+                      radial-gradient(circle at 80% 80%, #FF2D7822 0%, transparent 50%);
+  }
+
+  /* ── LOGIN ── */
+  #login-screen {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; min-height: 100vh; padding: 32px 16px; gap: 24px;
+  }
+  .login-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(48px, 12vw, 96px); letter-spacing: 4px; line-height: 1;
+    background: linear-gradient(135deg, var(--orange), var(--yellow), var(--pink));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    filter: drop-shadow(0 0 24px #FF4D1C66); text-align: center;
+  }
+  .login-sub { font-size: 13px; color: #555; letter-spacing: 3px; text-transform: uppercase; }
+  .login-card {
+    background: var(--card-bg); border: 2px solid #2A2A2A; border-radius: 20px;
+    padding: 32px; width: 100%; max-width: 400px;
+    box-shadow: 0 0 60px #FF4D1C22, 0 20px 60px #00000088;
+  }
+  .login-card h2 {
+    font-family: 'Bebas Neue', sans-serif; font-size: 22px; color: #888;
+    letter-spacing: 2px; text-align: center; margin-bottom: 20px;
+  }
+  .player-btn {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; background: #222; border: 1.5px solid #2E2E2E;
+    border-radius: 12px; padding: 14px 20px; margin-bottom: 10px;
+    color: #ccc; font-family: 'DM Sans', sans-serif; font-size: 15px;
+    font-weight: 700; cursor: pointer; transition: all 0.2s;
+  }
+  .player-btn:hover { border-color: var(--orange); color: #fff; transform: translateX(4px); }
+  .player-btn .arrow { color: var(--orange); font-size: 18px; }
+
+  /* ── GAME ── */
+  #game-screen {
+    display: none; flex-direction: column; align-items: center;
+    padding: 20px 16px 32px; gap: 16px; min-height: 100vh;
+  }
+  .game-header { text-align: center; }
+  .game-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(40px, 8vw, 72px); letter-spacing: 4px; line-height: 1;
+    background: linear-gradient(135deg, var(--orange), var(--yellow), var(--pink));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  }
+  #greeting { font-size: 12px; color: #555; letter-spacing: 2px; text-transform: uppercase; margin-top: 4px; }
+
+  /* scoreboard */
+  .scoreboard-wrap {
+    background: var(--card-bg); border: 2px solid #2A2A2A; border-radius: 16px;
+    padding: 16px 20px; width: 100%; max-width: 700px;
+  }
+  .sb-title {
+    font-family: 'Bebas Neue', sans-serif; font-size: 18px; letter-spacing: 2px;
+    color: #444; margin-bottom: 12px; text-align: center;
+  }
+  #scoreboard { display: flex; flex-direction: column; gap: 8px; }
+  .sb-row {
+    display: flex; align-items: center; gap: 12px;
+    background: #222; border: 1.5px solid #2E2E2E;
+    border-radius: 10px; padding: 10px 16px;
+  }
+  .sb-row.sb-me { border-color: var(--orange); background: #FF4D1C11; }
+  .sb-rank { font-size: 18px; min-width: 28px; }
+  .sb-name { flex: 1; font-weight: 700; color: #ccc; font-size: 14px; }
+  .sb-row.sb-me .sb-name { color: var(--yellow); }
+  .sb-pts { font-family: 'Bebas Neue', sans-serif; font-size: 26px; color: var(--orange); }
+  .sb-pts small { font-family: 'DM Sans', sans-serif; font-size: 11px; color: #555; }
+
+  /* my score banner */
+  .score-banner {
+    display: flex; align-items: center; justify-content: center; gap: 32px;
+    background: var(--card-bg); border: 2px solid #2A2A2A; border-radius: 16px;
+    padding: 14px 32px; width: 100%; max-width: 700px;
+  }
+  .score-block { text-align: center; }
+  .score-label { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: #555; margin-bottom: 2px; }
+  .score-value { font-family: 'Bebas Neue', sans-serif; font-size: 40px; line-height: 1; color: var(--yellow); }
+  .score-divider { width: 1px; height: 48px; background: #2A2A2A; }
+
+  /* grid */
+  .card {
+    background: var(--card-bg); border: 2px solid #2A2A2A; border-radius: 20px;
+    padding: 20px; max-width: 700px; width: 100%;
+    box-shadow: 0 0 60px #FF4D1C22, 0 20px 60px #00000088;
+  }
+  .bingo-header { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 8px; }
+  .bingo-letter { font-family: 'Bebas Neue', sans-serif; font-size: 32px; text-align: center; padding: 8px 0; }
+  .bingo-letter:nth-child(1){color:var(--orange)} .bingo-letter:nth-child(2){color:var(--yellow)}
+  .bingo-letter:nth-child(3){color:var(--pink)}   .bingo-letter:nth-child(4){color:var(--orange)}
+  .bingo-letter:nth-child(5){color:var(--yellow)}
+  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .cell {
+    background: var(--cell-bg); border: 1.5px solid #2E2E2E; border-radius: 12px;
+    aspect-ratio: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 8px; text-align: center;
+    font-size: clamp(8px, 1.5vw, 11px); font-weight: 600; color: #ccc; line-height: 1.3;
+    cursor: pointer; transition: all 0.2s ease; position: relative; overflow: hidden; user-select: none;
+  }
+  .cell:hover { border-color: #FF4D1C88; color: #fff; transform: scale(1.04); }
+  .cell.marked { background: #FF4D1C22; border-color: var(--orange); color: var(--yellow); }
+  .cell.marked::after { content:'✓'; position:absolute; top:4px; right:6px; font-size:11px; color:var(--orange); }
+  .cell.center { background: linear-gradient(135deg, var(--pink), #c0205a); border-color: var(--pink); color:#fff; font-size: clamp(8px,1.4vw,10px); font-weight:800; }
+  .cell.center:hover { transform:scale(1.06); box-shadow:0 0 20px #FF2D7866; }
+  .cell.center.marked { background: linear-gradient(135deg, var(--yellow), var(--orange)); border-color:var(--yellow); color:var(--dark); }
+  .emoji { display:block; font-size:18px; margin-bottom:3px; }
+  .pts-badge {
+    display:inline-block; margin-top:4px; font-size:9px; font-weight:800;
+    color:var(--orange); background:#FF4D1C18; border:1px solid #FF4D1C44;
+    border-radius:100px; padding:1px 6px; line-height:1.6;
+  }
+  .cell.marked .pts-badge { color:var(--yellow); background:#FFD60018; border-color:#FFD60044; }
+  .cell.center .pts-badge { color:#fff; background:#ffffff22; border-color:#ffffff44; }
+  .cell.center.marked .pts-badge { color:var(--dark); background:#00000022; border-color:#00000044; }
+
+  .back-btn {
+    background:transparent; border:1.5px solid #333; color:#555;
+    font-family:'DM Sans',sans-serif; font-size:12px; font-weight:600;
+    letter-spacing:2px; text-transform:uppercase; padding:10px 28px;
+    border-radius:100px; cursor:pointer; transition:all 0.2s;
+  }
+  .back-btn:hover { border-color:#555; color:#888; }
+
+  @media(max-width:480px){
+    .card{padding:12px} .grid,.bingo-header{gap:5px}
+    .cell{border-radius:8px; padding:5px; font-size:7.5px}
+    .emoji{font-size:14px; margin-bottom:2px} .bingo-letter{font-size:24px}
+    .score-banner{gap:16px; padding:12px 16px} .score-value{font-size:32px}
+    .pts-badge{font-size:8px; padding:1px 4px}
+  }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div>
+    <div class="login-title">SPRING BREAK</div>
+    <div class="login-title" style="font-size:clamp(30px,7vw,60px);margin-top:-8px">BINGO 🔥</div>
+    <p class="login-sub" style="text-align:center;margin-top:8px">¿Quién eres?</p>
+  </div>
+  <div class="login-card">
+    <h2>SELECCIONA TU JUGADOR</h2>
+    <button class="player-btn" onclick="selectPlayer('Yavar')">  <span>Yavar</span>  <span class="arrow">→</span></button>
+    <button class="player-btn" onclick="selectPlayer('Pelao')">  <span>Pelao</span>  <span class="arrow">→</span></button>
+    <button class="player-btn" onclick="selectPlayer('Juanca')">   <span>Juanca</span>   <span class="arrow">→</span></button>
+    <button class="player-btn" onclick="selectPlayer('Guatón')"> <span>Guatón</span> <span class="arrow">→</span></button>
+  </div>
+</div>
+
+<!-- GAME -->
+<div id="game-screen">
+  <div class="game-header">
+    <div class="game-title">SPRING BREAK BINGO 🔥</div>
+    <div id="greeting"></div>
+  </div>
+
+  <!-- Scoreboard -->
+  <div class="scoreboard-wrap" style="max-width:700px;width:100%">
+    <div class="sb-title">🏆 MARCADOR GENERAL</div>
+    <div id="scoreboard"></div>
+  </div>
+
+  <!-- My stats -->
+  <div class="score-banner">
+    <div class="score-block">
+      <div class="score-label">Mis puntos</div>
+      <div class="score-value" id="myTotalPts">0</div>
+    </div>
+    <div class="score-divider"></div>
+    <div class="score-block">
+      <div class="score-label">Completadas</div>
+      <div class="score-value" id="myCount">0</div>
+    </div>
+    <div class="score-divider"></div>
+    <div class="score-block">
+      <div class="score-label">Trío vale</div>
+      <div class="score-value" id="trioPts" style="color:var(--pink)">—</div>
+    </div>
+  </div>
+
+  <!-- Bingo card -->
+  <div class="card">
+    <div class="bingo-header">
+      <div class="bingo-letter">B</div><div class="bingo-letter">I</div>
+      <div class="bingo-letter">N</div><div class="bingo-letter">G</div>
+      <div class="bingo-letter">O</div>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <button class="back-btn" onclick="goBack()">← Cambiar jugador</button>
+</div>
+
+</body>
+</html>
